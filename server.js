@@ -5,10 +5,25 @@ const admin = require("firebase-admin");
 const app = express();
 app.use(express.json({ limit: "100mb" }));
 
-// Load Firebase from ENV (Render compatible)
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
-// Initialize Firebase
+// ================================
+// LOAD FIREBASE KEY FROM RENDER ENV
+// ================================
+
+if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+  console.error("FIREBASE_SERVICE_ACCOUNT ENV missing");
+  process.exit(1);
+}
+
+const serviceAccount = JSON.parse(
+  Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8")
+);
+
+
+// ================================
+// INITIALIZE FIREBASE
+// ================================
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   storageBucket: "evona-media.firebasestorage.app"
@@ -16,76 +31,116 @@ admin.initializeApp({
 
 const bucket = admin.storage().bucket();
 
-// Extension Map
+
+// ================================
+// MIME TYPE MAP
+// ================================
+
 const mimeMap = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/jpg": "jpg",
   "image/webp": "webp",
+
   "video/mp4": "mp4",
   "video/quicktime": "mov",
+
   "application/pdf": "pdf"
 };
 
-// Upload API
+
+// ================================
+// MAIN API ROUTE
+// ================================
+
 app.post("/upload-from-appsheet", async (req, res) => {
+
   try {
 
     const { fileUrl } = req.body;
 
     if (!fileUrl) {
-      return res.status(400).json({ error: "fileUrl missing" });
+      return res.status(400).json({
+        success: false,
+        error: "fileUrl missing"
+      });
     }
 
-    // Download file
+    console.log("Downloading:", fileUrl);
+
+    // Download file from AppSheet
     const response = await axios.get(fileUrl, {
       responseType: "arraybuffer"
     });
 
-    // FIX MIME TYPE (REMOVE charset)
+    // Fix content-type (remove charset=utf-8)
     let contentType = response.headers["content-type"];
+
+    if (!contentType) {
+      return res.status(400).json({
+        success: false,
+        error: "Content-Type missing"
+      });
+    }
+
     contentType = contentType.split(";")[0].trim();
 
-    const ext = mimeMap[contentType];
+    console.log("Detected Type:", contentType);
 
-    if (!ext) {
+    const extension = mimeMap[contentType];
+
+    if (!extension) {
       return res.status(400).json({
+        success: false,
         error: "Unsupported file type",
         received: contentType
       });
     }
 
-    const fileName = `uploads/${Date.now()}.${ext}`;
+    const fileName = `uploads/${Date.now()}.${extension}`;
 
     const file = bucket.file(fileName);
 
+    // Upload to Firebase Storage
     await file.save(response.data, {
       metadata: {
         contentType: contentType
       }
     });
 
+    // Make public
     await file.makePublic();
 
     const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
 
+    console.log("Uploaded:", publicUrl);
+
+    // SUCCESS RESPONSE
     return res.json({
+      success: true,
       url: publicUrl,
       type: contentType
     });
 
-  } catch (err) {
+  } catch (error) {
 
-    console.error("UPLOAD ERROR:", err.message);
+    console.error("UPLOAD ERROR:", error);
 
     return res.status(500).json({
+      success: false,
       error: "Upload failed",
-      details: err.message
+      message: error.message
     });
+
   }
+
 });
 
-// Render Compatible Port
+
+// ================================
+// RENDER PORT BINDING
+// ================================
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
