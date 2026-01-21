@@ -1,17 +1,22 @@
 const express = require("express");
-const axios = require("axios");
 const admin = require("firebase-admin");
-const path = require("path");
+const axios = require("axios");
 
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
+// Render compatible port
+const PORT = process.env.PORT || 3000;
 
-// ===== FIREBASE KEY FROM ENV =====
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON);
+// ==============================
+// Load Firebase Service Account from ENV
+// ==============================
 
-// ===== INIT FIREBASE =====
+const serviceAccount = JSON.parse(
+  Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8")
+);
+
+// Initialize Firebase
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   storageBucket: "evona-media.firebasestorage.app"
@@ -19,67 +24,65 @@ admin.initializeApp({
 
 const bucket = admin.storage().bucket();
 
-// ===== MEDIA TYPE DETECTOR =====
-function detectWhatsappType(mime) {
+// ==============================
+// Helper: Detect File Extension
+// ==============================
 
-  if (mime.startsWith("image")) return "image";
-  if (mime.startsWith("video")) return "video";
-  if (mime === "application/pdf") return "document";
-
-  return "document";
+function getFileExtension(url) {
+  const cleanUrl = url.split("?")[0];
+  return cleanUrl.substring(cleanUrl.lastIndexOf("."));
 }
 
-// ===== MAIN API =====
+// ==============================
+// API Endpoint
+// ==============================
+
 app.post("/upload-from-appsheet", async (req, res) => {
 
   try {
 
-    const fileUrl = req.body.fileUrl;
+    const { fileUrl } = req.body;
 
     if (!fileUrl) {
-      return res.status(400).json({
-        success: false,
-        error: "fileUrl missing"
-      });
+      return res.status(400).json({ error: "fileUrl missing" });
     }
 
-    // Extract file extension
-    const cleanUrl = fileUrl.split("?")[0];
-    const ext = path.extname(cleanUrl) || ".bin";
+    // Detect extension (jpg, png, pdf, mp4 etc)
+    const extension = getFileExtension(fileUrl);
 
-    const fileName = `uploads/media_${Date.now()}${ext}`;
+    // Generate Firebase filename
+    const fileName = `uploads/${Date.now()}${extension}`;
 
     // Download file
-    const response = await axios.get(fileUrl, {
-      responseType: "arraybuffer"
+    const response = await axios({
+      url: fileUrl,
+      method: "GET",
+      responseType: "stream"
     });
-
-    const buffer = response.data;
-    const mimeType = response.headers["content-type"];
 
     // Upload to Firebase
     const file = bucket.file(fileName);
 
-    await file.save(buffer, {
-      metadata: {
-        contentType: mimeType
-      }
+    await new Promise((resolve, reject) => {
+
+      const stream = file.createWriteStream({
+        resumable: false,
+        contentType: response.headers["content-type"]
+      });
+
+      response.data.pipe(stream)
+        .on("finish", resolve)
+        .on("error", reject);
     });
 
     // Make public
     await file.makePublic();
 
-    const publicUrl =
-      `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+    const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
 
-    const whatsappType = detectWhatsappType(mimeType);
-
-    // Response
+    // FINAL RESPONSE (11za compatible)
     res.json({
-      success: true,
-      publicUrl: publicUrl,
-      mimeType: mimeType,
-      whatsappType: whatsappType
+      url: publicUrl
     });
 
   } catch (error) {
@@ -87,7 +90,6 @@ app.post("/upload-from-appsheet", async (req, res) => {
     console.error(error);
 
     res.status(500).json({
-      success: false,
       error: "Upload failed"
     });
 
@@ -95,7 +97,10 @@ app.post("/upload-from-appsheet", async (req, res) => {
 
 });
 
-// ===== START SERVER =====
+// ==============================
+// Start Server
+// ==============================
+
 app.listen(PORT, () => {
   console.log("Evona Media Server Running on Port", PORT);
 });
