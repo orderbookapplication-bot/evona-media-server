@@ -3,25 +3,25 @@ const axios = require("axios");
 const admin = require("firebase-admin");
 
 const app = express();
-app.use(express.json({ limit: "100mb" }));
 
+// Increase body limit for big media
+app.use(express.json({ limit: "200mb" }));
 
 // ================================
-// LOAD FIREBASE KEY FROM RENDER ENV
+// LOAD FIREBASE SERVICE ACCOUNT
 // ================================
 
-if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-  console.error("FIREBASE_SERVICE_ACCOUNT ENV missing");
-  process.exit(1);
-}
+// IMPORTANT:
+// In Render ENV variable:
+// KEY NAME = FIREBASE_SERVICE_ACCOUNT
+// VALUE = Base64 encoded firebase json
 
 const serviceAccount = JSON.parse(
   Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8")
 );
 
-
 // ================================
-// INITIALIZE FIREBASE
+// INIT FIREBASE
 // ================================
 
 admin.initializeApp({
@@ -30,7 +30,6 @@ admin.initializeApp({
 });
 
 const bucket = admin.storage().bucket();
-
 
 // ================================
 // MIME TYPE MAP
@@ -41,20 +40,16 @@ const mimeMap = {
   "image/jpeg": "jpg",
   "image/jpg": "jpg",
   "image/webp": "webp",
-
   "video/mp4": "mp4",
   "video/quicktime": "mov",
-
   "application/pdf": "pdf"
 };
 
-
 // ================================
-// MAIN API ROUTE
+// UPLOAD API
 // ================================
 
 app.post("/upload-from-appsheet", async (req, res) => {
-
   try {
 
     const { fileUrl } = req.body;
@@ -66,30 +61,32 @@ app.post("/upload-from-appsheet", async (req, res) => {
       });
     }
 
-    console.log("Downloading:", fileUrl);
+    // ================================
+    // DOWNLOAD FILE FROM APPSHEET
+    // ================================
 
-    // Download file from AppSheet
     const response = await axios.get(fileUrl, {
       responseType: "arraybuffer"
     });
 
-    // Fix content-type (remove charset=utf-8)
+    // ================================
+    // FIX CONTENT TYPE (REMOVE charset)
+    // ================================
+
     let contentType = response.headers["content-type"];
 
     if (!contentType) {
       return res.status(400).json({
         success: false,
-        error: "Content-Type missing"
+        error: "Unable to detect file type"
       });
     }
 
     contentType = contentType.split(";")[0].trim();
 
-    console.log("Detected Type:", contentType);
+    const ext = mimeMap[contentType];
 
-    const extension = mimeMap[contentType];
-
-    if (!extension) {
+    if (!ext) {
       return res.status(400).json({
         success: false,
         error: "Unsupported file type",
@@ -97,48 +94,68 @@ app.post("/upload-from-appsheet", async (req, res) => {
       });
     }
 
-    const fileName = `uploads/${Date.now()}.${extension}`;
+    // ================================
+    // GENERATE FILE NAME
+    // ================================
+
+    const fileName = `uploads/${Date.now()}.${ext}`;
 
     const file = bucket.file(fileName);
 
-    // Upload to Firebase Storage
+    // ================================
+    // UPLOAD TO FIREBASE
+    // ================================
+
     await file.save(response.data, {
       metadata: {
         contentType: contentType
-      }
+      },
+      resumable: false
     });
 
     // Make public
     await file.makePublic();
 
-    const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+    // ================================
+    // WHATSAPP MOBILE SAFE URL
+    // ================================
 
-    console.log("Uploaded:", publicUrl);
+    const encodedPath = encodeURIComponent(fileName);
 
-    // SUCCESS RESPONSE
+    const publicUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodedPath}?alt=media`;
+
+    // ================================
+    // RESPONSE
+    // ================================
+
     return res.json({
       success: true,
       url: publicUrl,
-      type: contentType
+      fileType: contentType
     });
 
-  } catch (error) {
+  } catch (err) {
 
-    console.error("UPLOAD ERROR:", error);
+    console.error("UPLOAD ERROR:", err);
 
     return res.status(500).json({
       success: false,
       error: "Upload failed",
-      message: error.message
+      details: err.message
     });
-
   }
-
 });
 
+// ================================
+// HEALTH CHECK
+// ================================
+
+app.get("/", (req, res) => {
+  res.send("Evona Media Server Running ✅");
+});
 
 // ================================
-// RENDER PORT BINDING
+// RENDER COMPATIBLE PORT
 // ================================
 
 const PORT = process.env.PORT || 3000;
