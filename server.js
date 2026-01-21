@@ -1,20 +1,12 @@
 const express = require("express");
-const admin = require("firebase-admin");
 const axios = require("axios");
+const admin = require("firebase-admin");
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "100mb" }));
 
-// Render compatible port
-const PORT = process.env.PORT || 3000;
-
-// ==============================
-// Load Firebase Service Account from ENV
-// ==============================
-
-const serviceAccount = JSON.parse(
-  Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8")
-);
+// Load Firebase from ENV (Render compatible)
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
 // Initialize Firebase
 admin.initializeApp({
@@ -24,21 +16,19 @@ admin.initializeApp({
 
 const bucket = admin.storage().bucket();
 
-// ==============================
-// Helper: Detect File Extension
-// ==============================
+// Extension Map
+const mimeMap = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "application/pdf": "pdf"
+};
 
-function getFileExtension(url) {
-  const cleanUrl = url.split("?")[0];
-  return cleanUrl.substring(cleanUrl.lastIndexOf("."));
-}
-
-// ==============================
-// API Endpoint
-// ==============================
-
+// Upload API
 app.post("/upload-from-appsheet", async (req, res) => {
-
   try {
 
     const { fileUrl } = req.body;
@@ -47,59 +37,56 @@ app.post("/upload-from-appsheet", async (req, res) => {
       return res.status(400).json({ error: "fileUrl missing" });
     }
 
-    // Detect extension (jpg, png, pdf, mp4 etc)
-    const extension = getFileExtension(fileUrl);
-
-    // Generate Firebase filename
-    const fileName = `uploads/${Date.now()}${extension}`;
-
     // Download file
-    const response = await axios({
-      url: fileUrl,
-      method: "GET",
-      responseType: "stream"
+    const response = await axios.get(fileUrl, {
+      responseType: "arraybuffer"
     });
 
-    // Upload to Firebase
+    // FIX MIME TYPE (REMOVE charset)
+    let contentType = response.headers["content-type"];
+    contentType = contentType.split(";")[0].trim();
+
+    const ext = mimeMap[contentType];
+
+    if (!ext) {
+      return res.status(400).json({
+        error: "Unsupported file type",
+        received: contentType
+      });
+    }
+
+    const fileName = `uploads/${Date.now()}.${ext}`;
+
     const file = bucket.file(fileName);
 
-    await new Promise((resolve, reject) => {
-
-      const stream = file.createWriteStream({
-        resumable: false,
-        contentType: response.headers["content-type"]
-      });
-
-      response.data.pipe(stream)
-        .on("finish", resolve)
-        .on("error", reject);
+    await file.save(response.data, {
+      metadata: {
+        contentType: contentType
+      }
     });
 
-    // Make public
     await file.makePublic();
 
     const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
 
-    // FINAL RESPONSE (11za compatible)
-    res.json({
-      url: publicUrl
+    return res.json({
+      url: publicUrl,
+      type: contentType
     });
 
-  } catch (error) {
+  } catch (err) {
 
-    console.error(error);
+    console.error("UPLOAD ERROR:", err.message);
 
-    res.status(500).json({
-      error: "Upload failed"
+    return res.status(500).json({
+      error: "Upload failed",
+      details: err.message
     });
-
   }
-
 });
 
-// ==============================
-// Start Server
-// ==============================
+// Render Compatible Port
+const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log("Evona Media Server Running on Port", PORT);
