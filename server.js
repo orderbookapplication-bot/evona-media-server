@@ -3,15 +3,13 @@ const axios = require("axios");
 const admin = require("firebase-admin");
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "100mb" }));
 
 // ==============================
-// FIREBASE INIT FROM ENV
+// FIREBASE INIT FROM ENV (RENDER SAFE)
 // ==============================
 
-const serviceAccount = JSON.parse(
-  Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8")
-);
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -21,7 +19,7 @@ admin.initializeApp({
 const bucket = admin.storage().bucket();
 
 // ==============================
-// VIDEO UPLOAD API (STABLE)
+// VIDEO UPLOAD API (WHATSAPP SAFE)
 // ==============================
 
 app.post("/upload-from-appsheet", async (req, res) => {
@@ -34,33 +32,30 @@ app.post("/upload-from-appsheet", async (req, res) => {
       return res.status(400).json({ error: "fileUrl missing" });
     }
 
-    console.log("Downloading video...");
+    console.log("Downloading full video file...");
 
-    const response = await axios({
-      method: "GET",
-      url: fileUrl,
-      responseType: "stream"
+    // Download COMPLETE FILE
+    const response = await axios.get(fileUrl, {
+      responseType: "arraybuffer",
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
     });
 
-    const fileName = `uploads/${Date.now()}.mp4`;
+    const buffer = Buffer.from(response.data);
 
+    const fileName = `uploads/${Date.now()}.mp4`;
     const firebaseFile = bucket.file(fileName);
 
-    await new Promise((resolve, reject) => {
+    console.log("Uploading to Firebase Storage...");
 
-      response.data
-        .pipe(firebaseFile.createWriteStream({
-  resumable: false,
-  metadata: {
-    contentType: "video/mp4",
-    cacheControl: "public,max-age=31536000",
-    contentDisposition: "attachment"
-  }
-}))
-
-        .on("finish", resolve)
-        .on("error", reject);
-
+    // Upload as FULL BINARY FILE (NO STREAM)
+    await firebaseFile.save(buffer, {
+      resumable: false,
+      metadata: {
+        contentType: "video/mp4",
+        cacheControl: "public,max-age=31536000",
+        contentDisposition: "inline"
+      }
     });
 
     await firebaseFile.makePublic();
@@ -68,19 +63,21 @@ app.post("/upload-from-appsheet", async (req, res) => {
     const publicUrl =
       `https://storage.googleapis.com/${bucket.name}/${fileName}`;
 
-    console.log("Upload Success:", publicUrl);
+    console.log("Upload success:", publicUrl);
 
     return res.json({
       success: true,
       url: publicUrl
     });
 
-  } catch (err) {
+  } catch (error) {
 
-    console.error("UPLOAD ERROR:", err);
+    console.error("UPLOAD ERROR:", error);
 
     return res.status(500).json({
-      error: "Upload failed"
+      success: false,
+      error: "Upload failed",
+      details: error.message
     });
 
   }
@@ -88,7 +85,7 @@ app.post("/upload-from-appsheet", async (req, res) => {
 });
 
 // ==============================
-// RENDER PORT
+// RENDER PORT CONFIG
 // ==============================
 
 const PORT = process.env.PORT || 3000;
