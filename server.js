@@ -1,30 +1,3 @@
-const express = require("express");
-const axios = require("axios");
-const admin = require("firebase-admin");
-
-const app = express();
-app.use(express.json({ limit: "100mb" }));
-
-// ==============================
-// FIREBASE INIT FROM ENV (RENDER SAFE)
-// ==============================
-
-const serviceAccount = JSON.parse(
-  Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8")
-);
-
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  storageBucket: "evona-media.firebasestorage.app"
-});
-
-const bucket = admin.storage().bucket();
-
-// ==============================
-// VIDEO UPLOAD API (WHATSAPP SAFE)
-// ==============================
-
 app.post("/upload-from-appsheet", async (req, res) => {
 
   try {
@@ -35,30 +8,33 @@ app.post("/upload-from-appsheet", async (req, res) => {
       return res.status(400).json({ error: "fileUrl missing" });
     }
 
-    console.log("Downloading full video file...");
+    console.log("Downloading video...");
 
-    // Download COMPLETE FILE
-    const response = await axios.get(fileUrl, {
-      responseType: "arraybuffer",
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
+    const response = await axios({
+      method: "GET",
+      url: fileUrl,
+      responseType: "stream"
     });
-
-    const buffer = Buffer.from(response.data);
 
     const fileName = `uploads/${Date.now()}.mp4`;
     const firebaseFile = bucket.file(fileName);
 
-    console.log("Uploading to Firebase Storage...");
+    await new Promise((resolve, reject) => {
 
-    // Upload as FULL BINARY FILE (NO STREAM)
-    await firebaseFile.save(buffer, {
-      resumable: false,
-      metadata: {
-        contentType: "video/mp4",
-        cacheControl: "public,max-age=31536000",
-        contentDisposition: "inline"
-      }
+      const writeStream = firebaseFile.createWriteStream({
+        resumable: false,   // IMPORTANT FOR WHATSAPP
+        metadata: {
+          contentType: "video/mp4",
+          contentDisposition: "inline", // MOBILE FIX
+          cacheControl: "public, max-age=31536000"
+        }
+      });
+
+      response.data
+        .pipe(writeStream)
+        .on("finish", resolve)
+        .on("error", reject);
+
     });
 
     await firebaseFile.makePublic();
@@ -66,33 +42,21 @@ app.post("/upload-from-appsheet", async (req, res) => {
     const publicUrl =
       `https://storage.googleapis.com/${bucket.name}/${fileName}`;
 
-    console.log("Upload success:", publicUrl);
+    console.log("Upload Success:", publicUrl);
 
     return res.json({
       success: true,
       url: publicUrl
     });
 
-  } catch (error) {
+  } catch (err) {
 
-    console.error("UPLOAD ERROR:", error);
+    console.error("UPLOAD ERROR:", err);
 
     return res.status(500).json({
-      success: false,
-      error: "Upload failed",
-      details: error.message
+      error: "Upload failed"
     });
 
   }
 
-});
-
-// ==============================
-// RENDER PORT CONFIG
-// ==============================
-
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log("Evona Media Server Running on Port", PORT);
 });
