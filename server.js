@@ -50,11 +50,14 @@ app.post("/upload-from-appsheet", async (req, res) => {
 
       response.data
         .pipe(firebaseFile.createWriteStream({
-          metadata: {
-            contentType: "video/mp4",
-            cacheControl: "public,max-age=31536000"
-          }
-        }))
+  resumable: false,
+  metadata: {
+    contentType: "video/mp4",
+    cacheControl: "public,max-age=31536000",
+    contentDisposition: "attachment"
+  }
+}))
+
         .on("finish", resolve)
         .on("error", reject);
 
