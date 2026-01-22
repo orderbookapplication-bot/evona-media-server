@@ -9,9 +9,7 @@ app.use(express.json());
 // FIREBASE INIT FROM ENV
 // ==============================
 
-const serviceAccount = JSON.parse(
-  process.env.FIREBASE_SERVICE_ACCOUNT
-);
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -21,7 +19,7 @@ admin.initializeApp({
 const bucket = admin.storage().bucket();
 
 // ==============================
-// UPLOAD API
+// VIDEO UPLOAD API (STABLE)
 // ==============================
 
 app.post("/upload-from-appsheet", async (req, res) => {
@@ -34,7 +32,7 @@ app.post("/upload-from-appsheet", async (req, res) => {
       return res.status(400).json({ error: "fileUrl missing" });
     }
 
-    console.log("Downloading file from AppSheet...");
+    console.log("Downloading video...");
 
     const response = await axios({
       method: "GET",
@@ -43,36 +41,41 @@ app.post("/upload-from-appsheet", async (req, res) => {
     });
 
     const fileName = `uploads/${Date.now()}.mp4`;
+
     const firebaseFile = bucket.file(fileName);
 
     await new Promise((resolve, reject) => {
+
       response.data
         .pipe(firebaseFile.createWriteStream({
           metadata: {
-            contentType: "video/mp4"
+            contentType: "video/mp4",
+            cacheControl: "public,max-age=31536000"
           }
         }))
         .on("finish", resolve)
         .on("error", reject);
+
     });
 
     await firebaseFile.makePublic();
 
-    const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+    const publicUrl =
+      `https://storage.googleapis.com/${bucket.name}/${fileName}`;
 
     console.log("Upload Success:", publicUrl);
 
-    res.json({
+    return res.json({
       success: true,
-      publicUrl: publicUrl
+      url: publicUrl
     });
 
   } catch (err) {
 
-    console.error(err);
+    console.error("UPLOAD ERROR:", err);
 
-    res.status(500).json({
-      error: "Firebase upload failed"
+    return res.status(500).json({
+      error: "Upload failed"
     });
 
   }
@@ -80,7 +83,7 @@ app.post("/upload-from-appsheet", async (req, res) => {
 });
 
 // ==============================
-// PORT (RENDER COMPATIBLE)
+// RENDER PORT
 // ==============================
 
 const PORT = process.env.PORT || 3000;
