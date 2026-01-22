@@ -114,3 +114,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Evona Media Server Running on Port", PORT);
 });
+
+firebase-key.json
+.env
+node_modules
